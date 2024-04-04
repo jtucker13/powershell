@@ -8,12 +8,12 @@ param(
     )  
     if($UserGroup){$xpath = "//*[@Identifier='UEM.Condition.UserGroupMembership']"}
     $l1Nodes = Select-XML $XMLIn -XPath $xpath|Select-Object -ExpandProperty Node
-    $usefulInfo = [System.Collections.ArrayList]@()
+    $global:usefulInfo = [System.Collections.ArrayList]@()
     function CheckNode{
         param(
             $node,
-            $parentGroupName,
-            $addQuals
+            [String]$parentGroupName,
+            [String]$addQuals
             )
         if($node.Identifier -notlike "UEM.Condition*"){
             $listitem=[PSCustomObject]@{
@@ -32,11 +32,12 @@ param(
     }
     foreach($l1node in $l1Nodes){
         $l2Nodes = $l1node.Actions.Action
+        [String]$conditionGroup=($l1node.Name).Substring(23)
         foreach($l2node in $l2Nodes)
         {
-            CheckNode($l2node,($l1node.Name).Substring(23),"")         
+            CheckNode($l2node,$conditionGroup,"")         
         }    
     }
-    $usefulInfo| Export-Csv -path $CSVOut
+    $Global:usefulInfo
     #L2 Node (select-xml c:\temp\shortcuts.xml -Xpath "//*[@Identifier='UEM.Condition.UserGroupMembership']"|Select-Object -Exp Node).Actions.Action
     #(select-xml c:\temp\shortcuts.xml -Xpath "//*[@Identifier='UEM.Condition.UserGroupMembership']"|Select-Object -Exp Node).Actions.Action.Actions.Action.Identifier
