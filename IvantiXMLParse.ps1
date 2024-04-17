@@ -4,21 +4,22 @@
 param(
     [Parameter(Mandatory)]$XMLIn, 
     $CSVOut,
-    [Parameter(Mandatory)][ValidateSet("UserGroup","FilePath")]$Type
+    [Parameter(Mandatory)][ValidateSet("UserGroup","FilePath","ComputerGroup")]$Type
 )
     if($Type -eq "UserGroup"){$xpath = "//*[@Identifier='UEM.Condition.UserGroupMembership']"}
     if($Type -eq "FilePath"){$xpath = "//*[@Identifier='UEM.Condition.FileCondition']"}
+    if($Type -eq "ComputerGroup"){$xpath = "//*[@Identifier='UEM.Condition.ComputerGroup']"}
     $l1Nodes = Select-XML $XMLIn -XPath $xpath|Select-Object -ExpandProperty Node
     $global:usefulInfo = [System.Collections.ArrayList]@()
     function CheckNode{
         param(
             $node,
-            [String]$parentGroupName,
+            [String]$conditionName,
             [String]$addQuals
             )
         if($node.Identifier -notlike "UEM.Condition*"){
             $listitem=[PSCustomObject]@{
-                Group = $parentGroupName
+                Condition = $conditionName
                 AdditionalQuals = $addQuals
                 Type = $node.Identifier
                 Action = $node.Name
@@ -28,15 +29,23 @@ param(
         }
         else{
             $addQuals+=($node.Name+"::::")
-            CheckNode $node.Actions.Action $parentGroupName $addQuals
+            CheckNode $node.Actions.Action $conditionName $addQuals
         }
     }
     foreach($l1node in $l1Nodes){
         $l2Nodes = $l1node.Actions.Action
-        [String]$conditionGroup=($l1node.Name).Substring(23)
+        if($Type -eq "UserGroup"){
+            [String]$condition=($l1node.Name).Substring(23)
+        }
+        if($Type -eq "FilePath"){
+            [String]$condition=($l1node.Name).TrimEnd("' exists.").TrimStart("File '")
+        }
+        if($Type -eq "ComputerGroup"){
+            [String]$condition=($l1node.Name).Substring(27)
+        }
         foreach($l2node in $l2Nodes)
         {
-            CheckNode $l2node $conditionGroup ""        
+            CheckNode $l2node $condition ""        
         }    
     }
     if($CSVOut){
