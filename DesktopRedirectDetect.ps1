@@ -1,6 +1,6 @@
 #Sets shell folder to redirected managed desktop
 #Written by Josh Tucker 9/17/2024
-$shellfolderpath="HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+$shellfolderpath="HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
 $desktoppath="C:\Desktop"
 if(Test-Path $desktoppath){
     $value = Get-ItemPropertyValue -Path $shellfolderpath -Name "Desktop" -ErrorAction SilentlyContinue
