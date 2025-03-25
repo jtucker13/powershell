@@ -81,8 +81,7 @@ function Get-OnPremFileMetadata {
 
     return $fileMetadata
 }
-
-# Function to compare file lists based on relative paths
+#Function to compare file lists and populate filesToCopy
 function Compare-FileLists {
     param (
         [array]$listA,
@@ -96,9 +95,11 @@ function Compare-FileLists {
 
         if (-not $fileB) {
             # File exists in directory A but not directory B
+            Write-Host "Marking $($fileA.Name) ($($fileA.SizeMB) MB) for copy."
             $filesToCopy += $fileA
         } elseif ($fileA.LastModified -gt $fileB.LastModified) {
             # File exists in both locations but the file on A has a more recent modified date
+            Write-Host "Marking $($fileA.Name) ($($fileA.SizeMB) MB) for copy."
             $filesToCopy += $fileA
         }
     }
@@ -106,7 +107,87 @@ function Compare-FileLists {
     return $filesToCopy
 }
 
-# Function to copy files to OneDrive
+# Function to create an upload session
+function Create-UploadSession {
+    param (
+        [string]$accessToken,
+        [string]$userPrincipalName,
+        [string]$relativePath
+    )
+
+    $headers = @{
+        Authorization = "Bearer $accessToken"
+        "Content-Type"  = "application/json"
+    }
+
+    $body = @{
+        item = @{
+            "@microsoft.graph.conflictBehavior" = "replace"
+            name = [System.IO.Path]::GetFileName($relativePath)
+        }
+    } | ConvertTo-Json
+
+    $url = "https://graph.microsoft.com/v1.0/users/$userPrincipalName/drive/root:/$relativePath/createUploadSession"
+    $response = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -Body $body
+    return $response.uploadUrl
+}
+
+# Function to upload file in chunks
+function Upload-FileInChunks {
+    param (
+        [string]$uploadUrl,
+        [string]$filePath
+    )
+
+    $chunkSize = 60MB
+    $fileSize = (Get-Item $filePath).Length
+    $fileStream = [System.IO.File]::OpenRead($filePath)
+    $buffer = New-Object byte[] $chunkSize
+    $bytesRead = 0
+    $start = 0
+
+    while ($bytesRead -lt $fileSize) {
+        $end = [math]::Min($start + $chunkSize, $fileSize) - 1
+        $length = $end - $start + 1
+        $fileStream.Read($buffer, 0, $length) | Out-Null
+
+        $headers = @{
+            "Content-Length" = $length
+            "Content-Range"  = "bytes $start-$end/$fileSize"
+        }
+
+        $body = [System.IO.MemoryStream]::new()
+        $body.Write($buffer, 0, $length)
+        $body.Seek(0, [System.IO.SeekOrigin]::Begin) | Out-Null
+
+        Invoke-RestMethod -Method Put -Uri $uploadUrl -Headers $headers -Body $body
+
+        $start += $chunkSize
+    }
+
+    $fileStream.Close()
+}
+
+# Function to upload small files
+function Upload-SmallFile {
+    param (
+        [string]$accessToken,
+        [string]$userPrincipalName,
+        [string]$relativePath,
+        [string]$filePath
+    )
+
+    $destinationUrl = "https://graph.microsoft.com/v1.0/users/$userPrincipalName/drive/root:/$relativePath/content"
+    $fileContent = [System.IO.File]::ReadAllBytes($filePath)
+    $headers = @{
+        Authorization = "Bearer $accessToken"
+        "Content-Type"  = "application/octet-stream"
+    }
+
+    Invoke-RestMethod -Method Put -Uri $destinationUrl -Headers $headers -Body $fileContent
+}
+
+# Function to copy files to OneDrive using appropriate method based on file size
 function Copy-FilesToOneDrive {
     param (
         [array]$filesToCopy,
@@ -116,22 +197,25 @@ function Copy-FilesToOneDrive {
 
     foreach ($file in $filesToCopy) {
         $relativePath = $file.Path
-        $destinationUrl = "https://graph.microsoft.com/v1.0/users/$userPrincipalName/drive/root:/$relativePath/content"
-
-        $fileContent = [System.IO.File]::ReadAllBytes($file.Path)
-        $headers = @{
-            Authorization = "Bearer $accessToken"
-            "Content-Type"  = "application/octet-stream"
-        }
-
-        try {
-            Invoke-RestMethod -Method Put -Uri $destinationUrl -Headers $headers -Body $fileContent
-            Write-Output "Copied $($file.Name) to OneDrive."
-        } catch {
-            Write-Error "Failed to copy $($file.Name) to OneDrive: $_"
+        if ($file.SizeMB -le 4) {
+            try {
+                Upload-SmallFile -accessToken $accessToken -userPrincipalName $userPrincipalName -relativePath $relativePath -filePath $file.Path
+                Write-Host "Copied $($file.Name) to $relativePath using simple upload."
+            } catch {
+                Write-Error "Failed to copy $($file.Name) to OneDrive using simple upload: $_"
+            }
+        } else {
+            $uploadUrl = Create-UploadSession -accessToken $accessToken -userPrincipalName $userPrincipalName -relativePath $relativePath
+            try {
+                Upload-FileInChunks -uploadUrl $uploadUrl -filePath $file.Path
+                Write-Host "Copied $($file.Name) to $relativePath using upload session."
+            } catch {
+                Write-Error "Failed to copy $($file.Name) to OneDrive using upload session: $_"
+            }
         }
     }
 }
+
 #Get token and connect to MGGraph
 $accessToken = Get-AccessToken -tenantId $tenantId -clientId $clientId -clientSecret $clientSecret
 Connect-MgGraph -AccessToken $token
