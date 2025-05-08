@@ -2,9 +2,10 @@
 #Written by Josh Tucker 1/9/2025
 param(
     $CSVIn, 
-    [ValidateSet("CreateGroups","ExportGroupMembership","PromoteCSP")]$Action,
+    [ValidateSet("CreateGroups","AddDeviceGroupMembers","GetDeviceGroupMembers")]$Action,
     $CSVOut,
-    [bool]$mailEnabled=$false
+    [bool]$mailEnabled=$false,
+    $group
     )
 #Installs needed modules if not  present
 if(-not (Get-PackageProvider Nuget -ListAvailable)){
@@ -13,6 +14,7 @@ if(-not (Get-PackageProvider Nuget -ListAvailable)){
 if(-not (Get-Module Microsoft.Graph -ListAvailable)){
     Install-Module Microsoft.Graph -confirm:$false -Force
 }
+
 #Helper function to provide a GUI file picker for CSV if not specified
 function Get-CSVFile{
     Add-Type -AssemblyName System.Windows.Forms
@@ -51,13 +53,42 @@ if($Action -eq "CreateGroups"){
         $groups
     }
 }
-elseif($Action -eq "AddGroupMembers"){
+elseif($Action -eq "AddDeviceGroupMembers"){
     if(!$CSVIn){
         $CSVIn=Get-CSVFile
     }
     $assignraw=Import-CSV $CSVIn
     $assignments=foreach($assignment in $assignraw){
-        $device = Get-MgDevice -Filter "displayName eq $assignment.GroupName"
+        try {
+            $deviceid = (Get-MgDevice -Filter "DisplayName eq '$($assignment.DeviceName)'").id
+            $groupid = (Get-MgGroup -Filter "DisplayName eq '$($assignment.GroupName)'").id
+            foreach($devid in $deviceid){
+                New-MgGroupMember -GroupId $groupid -DirectoryObjectId $devid
+            }
+            
+            Write-Host "Added $($assignment.DeviceName) to $($assignment.GroupName)"
+        }
+        catch {
+            Write-Error "Failed to add $($assignment.DeviceName) to $($assignment.GroupName): $_"
+        }
+        
     }
     #TODO
 }
+elseif($Action -eq "GetDeviceGroupMembers"){
+    $groupid = (Get-MgGroup -Filter "DisplayName eq '$group'").id
+    $assignraw= Get-MgGroupMember -GroupId $groupid
+    $assignments=foreach($assignment in $assignraw){
+        [PSCustomObject]@{
+            DeviceName = (Get-MgDevice -DeviceId $assignment.id).DisplayName
+            GroupName = $group
+            }   
+    }
+    if($CSVOut){
+        $assignments|Export-CSV -Path $CSVOut
+    }
+    else{
+        $assignments
+    } 
+}
+Disconnect-MgGraph

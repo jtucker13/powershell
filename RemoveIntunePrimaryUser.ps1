@@ -5,7 +5,8 @@
 param(
     $clientId = $env:RemoveIntuneUserClientID,
     $clientSecret = $env:RemoveIntuneUserClientSecret,
-    $tenantId = $env:RemoveIntuneUserTenantID
+    $tenantId = $env:RemoveIntuneUserTenantID,
+    $CSVIn
 )
 
 #Installs needed modules if not  present
@@ -37,14 +38,18 @@ function Get-AccessToken {
     return $secureAccessToken
 }
 
-#Helper function to grab current device id
-function Get-Device ($accessToken){
-    $uri = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?"+'$filter'+"=deviceName eq '" + $env:COMPUTERNAME + "'&" + '$select=id,deviceName' 
+#Helper function to grab Entra device id, defaults to current device name if not specified
+function Get-Device (){
+    param(
+        $accessToken,
+        $devicename = $env:COMPUTERNAME
+    )
+    $uri = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?"+'$filter'+"=deviceName eq '" + $devicename + "'&" + '$select=id,deviceName' 
     $headers = @{
         Authorization = "Bearer $accessToken"
         "Content-Type" = "application/json"
     }
-    Write-Host "Searching for device $env:COMPUTERNAME"
+    Write-Host "Searching for device $devicename"
     $response= Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers
     $id = $response.value[0].id
     $name = $response.value[0].deviceName
@@ -79,6 +84,16 @@ function Remove-PrimaryUser ($accessToken, $deviceId) {
 #Main execution
 $token = Get-AccessToken
 Connect-MgGraph -AccessToken $token
-$device =Get-Device $token
-Remove-PrimaryUser $token $device
+if($CSVIn){
+    $devices = Import-Csv $CSVIn
+    foreach($dev in $devices){
+        $device = Get-Device $token $dev.DeviceName
+        Remove-PrimaryUser $token $device
+    }
+}
+else{
+    $device =Get-Device $token
+    Remove-PrimaryUser $token $device
+}
+
 Disconnect-MgGraph
