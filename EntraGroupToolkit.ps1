@@ -60,7 +60,7 @@ elseif($Action -eq "AddDeviceGroupMembers"){
     $assignraw=Import-CSV $CSVIn
     $assignments=foreach($assignment in $assignraw){
         try {
-            $deviceid = (Get-MgDevice -Filter "DisplayName eq '$($assignment.DeviceName)'").id
+            $deviceid = ((Get-MgDevice -Filter "DisplayName eq '$($assignment.DeviceName)'")|Sort-Object -Property RegistrationDateTime -Descending|Select-Object -First 1).id
             $groupid = (Get-MgGroup -Filter "DisplayName eq '$($assignment.GroupName)'").id
             foreach($devid in $deviceid){
                 New-MgGroupMember -GroupId $groupid -DirectoryObjectId $devid
@@ -91,20 +91,5 @@ elseif($Action -eq "GetDeviceGroupMembers"){
         $assignments
     } 
 }
-elseif($Action -eq "GetDeviceGroupMembers"){
-    $groupid = (Get-MgGroup -Filter "DisplayName eq '$group'").id
-    $assignraw= Get-MgGroupMember -GroupId $groupid
-    $assignments=foreach($assignment in $assignraw){
-        [PSCustomObject]@{
-            DeviceName = (Get-MgDevice -DeviceId $assignment.id).DisplayName
-            GroupName = $group
-            }   
-    }
-    if($CSVOut){
-        $assignments|Export-CSV -Path $CSVOut
-    }
-    else{
-        $assignments
-    } 
-}
+
 Disconnect-MgGraph
