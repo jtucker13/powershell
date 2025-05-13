@@ -91,4 +91,20 @@ elseif($Action -eq "GetDeviceGroupMembers"){
         $assignments
     } 
 }
+elseif($Action -eq "GetDeviceGroupMembers"){
+    $groupid = (Get-MgGroup -Filter "DisplayName eq '$group'").id
+    $assignraw= Get-MgGroupMember -GroupId $groupid
+    $assignments=foreach($assignment in $assignraw){
+        [PSCustomObject]@{
+            DeviceName = (Get-MgDevice -DeviceId $assignment.id).DisplayName
+            GroupName = $group
+            }   
+    }
+    if($CSVOut){
+        $assignments|Export-CSV -Path $CSVOut
+    }
+    else{
+        $assignments
+    } 
+}
 Disconnect-MgGraph
