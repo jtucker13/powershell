@@ -2,10 +2,13 @@
 #Written by Josh Tucker 1/9/2025
 param(
     $CSVIn, 
-    [ValidateSet("CreateGroups","AddDeviceGroupMembers","GetDeviceGroupMembers")]$Action,
+    [ValidateSet("CreateGroups","AddDeviceGroupMembers","GetDeviceGroupMembers","GetApplicationAssignments","AddApplicationAssignments")]$Action,
     $CSVOut,
     [bool]$mailEnabled=$false,
-    $group
+    $group,
+    $application,
+    [ValidateSet("Available","Required","Uninstall")]$intent,
+    [ValidateSet("Included, Excluded")]$assigntype
     )
 #Installs needed modules if not  present
 if(-not (Get-PackageProvider Nuget -ListAvailable)){
@@ -90,5 +93,65 @@ elseif($Action -eq "GetDeviceGroupMembers"){
     else{
         $assignments
     } 
+}
+elseif($Action -eq "GetApplicationAssignments"){
+    $appId = (Get-MgApplication -Filter "DisplayName eq '$application'").id 
+    $assignraw= (Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$appId/assignments").value
+    $assignments=foreach($assignment in $assignraw){
+        $assignmentsplit = $($assignment.id) -split "_"
+        if($assignmentsplit[2] -eq 0){
+            $assignType = "Included"
+        }
+        else{
+            $assignType = "Excluded"
+        }
+        [PSCustomObject]@{
+            ApplicationName = $application
+            GroupName = (Get-MgGroup -GroupId $assignmentsplit[0]).DisplayName
+            Intent = $assignment.Intent
+            AssignmentType = $assignType
+            }   
+    }
+    if($CSVOut){
+        $assignments|Export-CSV -Path $CSVOut
+    }
+    else{
+        $assignments
+    }    
+}
+elseif($Action -eq "AddApplicationAssignments"){
+    if($CSVIn){
+
+    }
+    else{
+
+    }
+    $appId = (Get-MgApplication -Filter "DisplayName eq '$application'").id
+    $groupid = (Get-MgGroup -Filter "DisplayName eq '$group'").id
+    if($assigntype = "Excluded"){
+        $targetodata="#microsoft.graph.exclusionGroupAssignmentTarget"
+        $settings=$null
+    }
+    else{
+        $targetodata="#microsoft.graph.groupAssignmentTarget"
+        $settings = @{
+            "@odata.type"                  = "#microsoft.graph.win32LobAppAssignmentSettings"
+            "notifications"                = "hideAll"
+            "restartSettings"              = $null
+            "installTimeSettings"          = $null
+            "deliveryOptimizationPriority" = "foreground"
+        }
+    }
+    $assignmentbody = @{
+        "@odata.type" = "#microsoft.graph.MobileAppAssignment"
+        "target" = @{
+            "@odata.type" = $targetodata
+            "groupId" = $groupId
+        }
+        "intent"=$intent
+        "settings"=$settings
+    } 
+    Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$appId/assign" -Body ($assignmentbody | ConvertTo-Json)
+   
 }
 Disconnect-MgGraph
