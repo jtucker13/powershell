@@ -6,7 +6,8 @@ param(
     $clientId = $env:RemoveIntuneUserClientID,
     $clientSecret = $env:RemoveIntuneUserClientSecret,
     $tenantId = $env:RemoveIntuneUserTenantID,
-    $CSVIn
+    $CSVIn,
+    $logFile
 )
 
 #Installs needed modules if not  present
@@ -17,9 +18,18 @@ if(-not (Get-Module Microsoft.Graph -ListAvailable)){
     Install-Module Microsoft.Graph -confirm:$false -Force
 }
 
-### Helper function to grab access token
+### Helper function to handle logging
+function Write-Log($message){
+    if($logFile){
+        $message|Out-File -FilePath $logFile -Append
+    }
+    else{
+        Write-Output $message
+    }
+}
+### Help function to grab access token
 function Get-AccessToken {
-    Write-Host 'Getting Access token'
+    Write-Log 'Getting Access token'
     $tokenUrl = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
     $body = @{
         grant_type = "client_credentials"
@@ -32,8 +42,8 @@ function Get-AccessToken {
     $accessToken = (ConvertFrom-Json $response.Content).access_token
     $expiresIn = (ConvertFrom-Json $response.Content).expires_in
     $expirationTime = (Get-Date).AddSeconds($expiresIn)
-    Write-Host 'Successfully obtained access token'
-    Write-Host "Access token expiration date and time: $expirationTime"
+    Write-Log 'Successfully obtained access token'
+    Write-Log "Access token expiration date and time: $expirationTime"
     $secureAccessToken = ConvertTo-SecureString $accessToken -AsPlainText -Force
     return $secureAccessToken
 }
@@ -44,17 +54,16 @@ function Get-Device (){
         $accessToken,
         $devicename = $env:COMPUTERNAME
     )
-    $uri = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?"+'$filter'+"=deviceName eq '" + $devicename + "'&" + '$select=id,deviceName' 
+    $uri = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?"+'$filter'+"=deviceName eq '" + $devicename + "'&" + '$select=id,deviceName,enrolledDateTime' 
     $headers = @{
         Authorization = "Bearer $accessToken"
         "Content-Type" = "application/json"
     }
-    Write-Host "Searching for device $devicename"
-    $response= Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers
-    $id = $response.value[0].id
-    $name = $response.value[0].deviceName
-    Write-Host "Fetched device name $name with device id of $id"
-    return $id
+    Write-Log "Searching for device $devicename"
+    $devlist= (Invoke-MgGraphRequest -Method GET -Uri $uri -Headers $headers).value
+    $device = $devlist|Sort-Object -Property enrolledDateTime -Descending|Select-Object -First 1
+    Write-Log "Fetched device name $($device.deviceName) with device id of $($device.id)"
+    return $device.id
 }
 <#
 .SYNOPSIS
@@ -77,7 +86,7 @@ function Remove-PrimaryUser ($accessToken, $deviceId) {
         "Content-Type" = "application/json"
     }
     Invoke-MgGraphRequest -Method DELETE -Uri $uri -Headers $headers
-    Write-Host "Deleting primary user from device record"
+    Write-Log "Deleting primary user from device record"
     #Invoke-MgGraphRequest -Method POST -Uri $syncuri -Headers $headers
     #Write-Host "Syncing device"
 }
