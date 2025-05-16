@@ -2,13 +2,12 @@
 #Written by Josh Tucker 1/9/2025
 param(
     $CSVIn, 
-    [ValidateSet("CreateGroups","AddDeviceGroupMembers","GetDeviceGroupMembers","GetApplicationAssignments","AddApplicationAssignments")]$Action,
+    [ValidateSet("CreateGroups","AddDeviceGroupMembers","GetDeviceGroupMembers","GetApplicationAssignments","SetApplicationAssignments")]$Action,
     $CSVOut,
     [bool]$mailEnabled=$false,
     $group,
     $application,
-    [ValidateSet("Available","Required","Uninstall")]$intent,
-    [ValidateSet("Included, Excluded")]$assigntype
+    $logFile
     )
 #Installs needed modules if not  present
 if(-not (Get-PackageProvider Nuget -ListAvailable)){
@@ -26,6 +25,49 @@ function Get-CSVFile{
     }
     $FilePicker.ShowDialog()|Out-Null
     return $FilePicker.FileName
+}
+#Helper function for log files
+function Write-Log($message){
+    if($logFile){
+        $message|Out-File -FilePath $logFile -Append
+    }
+    else{
+        Write-Output $message
+    }
+}
+#Helper function that builds the objects used for json conversion
+function New-AssignmentNode{
+    param(
+        [ValidateSet("Available","Required","Uninstall")]$intent,
+        [ValidateSet("Included", "Excluded")]$assigntype,
+        $groupId,
+        [ValidateSet("foreground","background")]$doPriority="foreground",
+        [ValidateSet("hideAll","showAll","showReboot")]$notifications="showReboot"
+    )
+    if($assigntype -eq "Excluded"){
+        $targetodata="#microsoft.graph.exclusionGroupAssignmentTarget"
+        $settings=$null
+    }
+    else{
+        $targetodata="#microsoft.graph.groupAssignmentTarget"
+        $settings = @{
+            "@odata.type"                  = "#microsoft.graph.win32LobAppAssignmentSettings"
+            "notifications"                = "hideAll"
+            "restartSettings"              = $null
+            "installTimeSettings"          = $null
+            "deliveryOptimizationPriority" = $doPriority
+        }
+    }
+    $assignmentbody = @{
+        "@odata.type" = "#microsoft.graph.MobileAppAssignment"
+        "target" = @{
+            "@odata.type" = $targetodata
+            "groupId" = $groupId
+        }
+        "intent"=$intent
+        "settings"=$settings
+    }
+    return $assignmentbody
 }
 #Prompts user for sign in to Entra, requires mggraph permissions
 Connect-MgGraph
@@ -47,7 +89,7 @@ if($Action -eq "CreateGroups"){
         Description=$group.Description
         Id=$ng.Id
         }
-        Write-Host "Created group $($group.DisplayName) with id $($ng.Id)"
+        Write-Log "Created group $($group.DisplayName) with id $($ng.Id)"
     }
     if($CSVOut){
         $groups|Export-CSV -Path $CSVOut -NoTypeInformation
@@ -69,10 +111,10 @@ elseif($Action -eq "AddDeviceGroupMembers"){
                 New-MgGroupMember -GroupId $groupid -DirectoryObjectId $devid
             }
             
-            Write-Host "Added $($assignment.DeviceName) to $($assignment.GroupName)"
+            Write-Log "Added $($assignment.DeviceName) to $($assignment.GroupName)"
         }
         catch {
-            Write-Error "Failed to add $($assignment.DeviceName) to $($assignment.GroupName): $_"
+            Write-Log "Failed to add $($assignment.DeviceName) to $($assignment.GroupName): $_"
         }
         
     }
@@ -119,39 +161,35 @@ elseif($Action -eq "GetApplicationAssignments"){
         $assignments
     }    
 }
-elseif($Action -eq "AddApplicationAssignments"){
-    if($CSVIn){
-
+elseif($Action -eq "SetApplicationAssignments"){
+    if(!$CSVIn){
+        $CSVIn=Get-CSVFile
     }
-    else{
-
-    }
-    $appId = (Get-MgApplication -Filter "DisplayName eq '$application'").id
-    $groupid = (Get-MgGroup -Filter "DisplayName eq '$group'").id
-    if($assigntype = "Excluded"){
-        $targetodata="#microsoft.graph.exclusionGroupAssignmentTarget"
-        $settings=$null
-    }
-    else{
-        $targetodata="#microsoft.graph.groupAssignmentTarget"
-        $settings = @{
-            "@odata.type"                  = "#microsoft.graph.win32LobAppAssignmentSettings"
-            "notifications"                = "hideAll"
-            "restartSettings"              = $null
-            "installTimeSettings"          = $null
-            "deliveryOptimizationPriority" = "foreground"
+    $assignraw=Import-CSV $CSVIn
+    $groupedassignments = $assignraw|Group-Object -Property ApplicationName
+    foreach($app in $groupedassignments){
+            $appId = (Get-MgApplication -Filter "DisplayName eq '$($app.ApplicationName)'").id
+            $assignmentArray=@()
+            #Builds an object for each group assignment
+            foreach ($row in $app.Group){
+                $groupId = (Get-MgGroup -Filter "DisplayName eq '$($row.GroupName)'").id
+                $assignment = New-AssignmentNode -intent $row.Intent -assigntype $row.AssignmentType -groupId $groupId
+                $assignmentArray += $assignment
+            } 
+            $payload = @{
+                mobileAppAssignments = $assignmentArray
+            }
+            $jsonPayload = $payload |ConvertTo-Json -Depth 5
+            try {
+                Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$appId/assign" -Body $jsonPayload
+                Write-Log "Updated assignments for $($app.ApplicationName) successfully"
+            }
+            catch {
+                Write-Log "Failed to update assignments for $($app.ApplicationName)"
+                Write-Log "JSON payload as follows:"
+                Write-Log $jsonPayload
+                <#Do this if a terminating exception happens#>
+            }
         }
-    }
-    $assignmentbody = @{
-        "@odata.type" = "#microsoft.graph.MobileAppAssignment"
-        "target" = @{
-            "@odata.type" = $targetodata
-            "groupId" = $groupId
-        }
-        "intent"=$intent
-        "settings"=$settings
-    } 
-    Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$appId/assign" -Body ($assignmentbody | ConvertTo-Json)
-   
 }
 Disconnect-MgGraph
