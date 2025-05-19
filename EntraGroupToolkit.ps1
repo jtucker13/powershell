@@ -69,6 +69,29 @@ function New-AssignmentNode{
     }
     return $assignmentbody
 }
+function Get-ApplicationAssignments{
+    param(
+        $applicationName
+    )
+    $appId = (Get-MgApplication -Filter "DisplayName eq '$applicationName'").id 
+    $assignraw= (Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$appId/assignments").value
+    $assignments=foreach($assignment in $assignraw){
+        $assignmentsplit = $($assignment.id) -split "_"
+        if($assignmentsplit[2] -eq 0){
+            $assignType = "Included"
+        }
+        else{
+            $assignType = "Excluded"
+        }
+        [PSCustomObject]@{
+            ApplicationName = $application
+            GroupName = (Get-MgGroup -GroupId $assignmentsplit[0]).DisplayName
+            Intent = $assignment.Intent
+            AssignmentType = $assignType
+            }   
+    }
+    return $assignments
+}
 #Prompts user for sign in to Entra, requires mggraph permissions
 Connect-MgGraph
 
@@ -137,28 +160,28 @@ elseif($Action -eq "GetDeviceGroupMembers"){
     } 
 }
 elseif($Action -eq "GetApplicationAssignments"){
-    $appId = (Get-MgApplication -Filter "DisplayName eq '$application'").id 
-    $assignraw= (Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$appId/assignments").value
-    $assignments=foreach($assignment in $assignraw){
-        $assignmentsplit = $($assignment.id) -split "_"
-        if($assignmentsplit[2] -eq 0){
-            $assignType = "Included"
+    if($CSVIn){
+        $applications=Import-CSV $CSVIn
+        $assignmentArray=@()
+        foreach($app in $applications){
+            $appassignment = Get-ApplicationAssignments -applicationName $app.ApplicationName
+            $assignmentArray += $appassignment
+        }
+        if($CSVOut){
+            $assignmentArray|Export-CSV -Path $CSVOut
         }
         else{
-            $assignType = "Excluded"
-        }
-        [PSCustomObject]@{
-            ApplicationName = $application
-            GroupName = (Get-MgGroup -GroupId $assignmentsplit[0]).DisplayName
-            Intent = $assignment.Intent
-            AssignmentType = $assignType
-            }   
-    }
-    if($CSVOut){
-        $assignments|Export-CSV -Path $CSVOut
+            $assignmentArray
+        }    
     }
     else{
-        $assignments
+        $appassignment =Get-ApplicationAssignments -applicationName $application
+        if($CSVOut){
+            $appassignment|Export-CSV -Path $CSVOut
+        }
+        else{
+            $appassignment
+        }
     }    
 }
 elseif($Action -eq "SetApplicationAssignments"){
