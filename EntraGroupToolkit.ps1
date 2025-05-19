@@ -1,5 +1,7 @@
-#Utility for modifying and working with CSPs
-#Written by Josh Tucker 1/9/2025
+#Utility for modifying and working with groups and apps
+#Modified by Josh Tucker 5/19/2025
+#Note- Application assignments currently unable to fetch 365 apps or Windows store apps
+
 param(
     $CSVIn, 
     [ValidateSet("CreateGroups","AddDeviceGroupMembers","GetDeviceGroupMembers","GetApplicationAssignments","SetApplicationAssignments")]$Action,
@@ -7,7 +9,8 @@ param(
     [bool]$mailEnabled=$false,
     $group,
     $application,
-    $logFile
+    $logFile,
+    [switch]$verbose
     )
 #Installs needed modules if not  present
 if(-not (Get-PackageProvider Nuget -ListAvailable)){
@@ -16,7 +19,7 @@ if(-not (Get-PackageProvider Nuget -ListAvailable)){
 if(-not (Get-Module Microsoft.Graph -ListAvailable)){
     Install-Module Microsoft.Graph -confirm:$false -Force
 }
-
+Import-Module Microsoft.Graph.Devices.CorporateManagement
 #Helper function to provide a GUI file picker for CSV if not specified
 function Get-CSVFile{
     Add-Type -AssemblyName System.Windows.Forms
@@ -31,14 +34,14 @@ function Write-Log($message){
     if($logFile){
         $message|Out-File -FilePath $logFile -Append
     }
-    else{
+    elseif($verbose){
         Write-Output $message
     }
 }
 #Helper function that builds the objects used for json conversion
 function New-AssignmentNode{
     param(
-        [ValidateSet("Available","Required","Uninstall")]$intent,
+        [ValidateSet("available","required","uninstall")]$intent,
         [ValidateSet("Included", "Excluded")]$assigntype,
         $groupId,
         [ValidateSet("foreground","background")]$doPriority="foreground",
@@ -59,13 +62,14 @@ function New-AssignmentNode{
         }
     }
     $assignmentbody = @{
-        "@odata.type" = "#microsoft.graph.MobileAppAssignment"
+        "@odata.type" = "#microsoft.graph.mobileAppAssignment"
+        "intent"=$intent
+        "settings"=$settings
         "target" = @{
             "@odata.type" = $targetodata
             "groupId" = $groupId
         }
-        "intent"=$intent
-        "settings"=$settings
+        
     }
     return $assignmentbody
 }
@@ -73,7 +77,8 @@ function Get-ApplicationAssignments{
     param(
         $applicationName
     )
-    $appId = (Get-MgApplication -Filter "DisplayName eq '$applicationName'").id 
+    $appId = (Get-MgDeviceAppManagementMobileApp -Filter "DisplayName eq '$applicationName'").id
+    Write-Log "Fetched application id $appId for $applicationName" 
     $assignraw= (Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$appId/assignments").value
     $assignments=foreach($assignment in $assignraw){
         $assignmentsplit = $($assignment.id) -split "_"
@@ -84,7 +89,7 @@ function Get-ApplicationAssignments{
             $assignType = "Excluded"
         }
         [PSCustomObject]@{
-            ApplicationName = $application
+            ApplicationName = $applicationName
             GroupName = (Get-MgGroup -GroupId $assignmentsplit[0]).DisplayName
             Intent = $assignment.Intent
             AssignmentType = $assignType
@@ -164,7 +169,7 @@ elseif($Action -eq "GetApplicationAssignments"){
         $applications=Import-CSV $CSVIn
         $assignmentArray=@()
         foreach($app in $applications){
-            $appassignment = Get-ApplicationAssignments -applicationName $app.ApplicationName
+            $appassignment = Get-ApplicationAssignments -applicationName $($app.ApplicationName)
             $assignmentArray += $appassignment
         }
         if($CSVOut){
@@ -177,7 +182,7 @@ elseif($Action -eq "GetApplicationAssignments"){
     else{
         $appassignment =Get-ApplicationAssignments -applicationName $application
         if($CSVOut){
-            $appassignment|Export-CSV -Path $CSVOut
+            $appassignment|Export-CSV -Path $CSVOut -NoTypeInformation
         }
         else{
             $appassignment
@@ -191,12 +196,12 @@ elseif($Action -eq "SetApplicationAssignments"){
     $assignraw=Import-CSV $CSVIn
     $groupedassignments = $assignraw|Group-Object -Property ApplicationName
     foreach($app in $groupedassignments){
-            $appId = (Get-MgApplication -Filter "DisplayName eq '$($app.ApplicationName)'").id
+            $appId = (Get-MgDeviceAppManagementMobileApp -Filter "DisplayName eq '$($app.Name)'").id
             $assignmentArray=@()
             #Builds an object for each group assignment
             foreach ($row in $app.Group){
                 $groupId = (Get-MgGroup -Filter "DisplayName eq '$($row.GroupName)'").id
-                $assignment = New-AssignmentNode -intent $row.Intent -assigntype $row.AssignmentType -groupId $groupId
+                $assignment = New-AssignmentNode -intent $($row.Intent) -assigntype $($row.AssignmentType) -groupId $groupId
                 $assignmentArray += $assignment
             } 
             $payload = @{
@@ -205,10 +210,10 @@ elseif($Action -eq "SetApplicationAssignments"){
             $jsonPayload = $payload |ConvertTo-Json -Depth 5
             try {
                 Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$appId/assign" -Body $jsonPayload
-                Write-Log "Updated assignments for $($app.ApplicationName) successfully"
+                Write-Log "Updated assignments for $($app.Name) successfully"
             }
             catch {
-                Write-Log "Failed to update assignments for $($app.ApplicationName)"
+                Write-Log "Failed to update assignments for $($app.Name)"
                 Write-Log "JSON payload as follows:"
                 Write-Log $jsonPayload
                 <#Do this if a terminating exception happens#>
